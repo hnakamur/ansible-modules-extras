@@ -32,10 +32,9 @@ options:
         description:
           - Name of a container.
         required: true
-    config:
+    image:
         description:
-          - A config dictionary for creating a container.
-            See https://github.com/lxc/lxd/blob/master/doc/rest-api.md#post-1
+          - Specifies the image to use in the format [remote:]image.
           - Required when the container is not created yet and the state is
             not absent.
         required: false
@@ -45,11 +44,45 @@ options:
           - stopped
           - restarted
           - absent
-          - frozen
         description:
           - Define the state of a container.
         required: false
         default: started
+    ephemeral:
+        description:
+          - Whether to create an ephemeral container or not.
+          - Used only when the container is not created yet.
+        required: false
+        default: false
+    profile:
+        description:
+          - Profile list to apply to the container.
+          - Used only when the container is not created yet.
+          - An empty list means no profile.
+        required: false
+        default: ['default']
+    config:
+        description:
+          - A dictionary to configure the container.
+          - Only used when the container is not created yet.
+        required: false
+    force:
+        description:
+          - Whether to force the operation or not.
+          - Used only when state is one of restarted, stopped or absent.
+          - Means force the shutdown for restarted and stopped, force the removal of the container for absent.
+        required: false
+        default: false
+    force_local:
+        description:
+          - Whether to force using the local unix socket or not.
+        required: false
+        default: false
+    no_alias:
+        description:
+          - Whether to ignore aliases for the cantainer for not.
+        required: false
+        default: false
     timeout_for_addresses:
         description:
           - A timeout of waiting for IPv4 addresses are set to the all network
@@ -59,7 +92,7 @@ options:
         required: false
         default: 0
 requirements:
-  - 'pylxd >= 2.0'
+  - 'lxc command'
 notes:
   - Containers must have a unique name. If you attempt to create a container
     with a name that already existed in the users namespace the module will
@@ -84,14 +117,7 @@ EXAMPLES = """
       lxd_container:
         name: my-ubuntu
         state: started
-        config:
-          source:
-            type: image
-            mode: pull
-            server: https://images.linuxcontainers.org
-            protocol: lxd
-            alias: "ubuntu/xenial/amd64"
-          profiles: ["default"]
+        image: images:ubuntu/xenial/amd64
     - name: Install python in the created container "nettest"
       command: lxc exec my-ubuntu -- apt install -y python
     - name: Copy somefile.txt to /tmp/renamed.txt in the created container "nettest"
@@ -106,14 +132,6 @@ EXAMPLES = """
       lxd_container:
         name: my-ubuntu
         state: stopped
-        config:
-          source:
-            type: image
-            mode: pull
-            server: https://images.linuxcontainers.org
-            protocol: lxd
-            alias: "ubuntu/xenial/amd64"
-          profiles: ["default"]
 
 - hosts: localhost
   connection: local
@@ -122,14 +140,6 @@ EXAMPLES = """
       lxd_container:
         name: my-ubuntu
         state: restarted
-        config:
-          source:
-            type: image
-            mode: pull
-            server: https://images.linuxcontainers.org
-            protocol: lxd
-            alias: "ubuntu/xenial/amd64"
-          profiles: ["default"]
 """
 
 RETURN="""
@@ -156,13 +166,6 @@ lxd_container:
 
 from distutils.spawn import find_executable
 
-try:
-    from pylxd.client import Client
-except ImportError:
-    HAS_PYLXD = False
-else:
-    HAS_PYLXD = True
-
 from requests.exceptions import ConnectionError
 
 # LXD_ANSIBLE_STATES is a map of states that contain values of methods used
@@ -172,7 +175,6 @@ LXD_ANSIBLE_STATES = {
     'stopped': '_stopped',
     'restarted': '_restarted',
     'absent': '_destroyed',
-    'frozen': '_frozen'
 }
 
 # ANSIBLE_LXD_STATES is a map of states of lxd containers to the Ansible
@@ -180,7 +182,6 @@ LXD_ANSIBLE_STATES = {
 ANSIBLE_LXD_STATES = {
     'Running': 'started',
     'Stopped': 'stopped',
-    'Frozen': 'frozen',
 }
 
 try:
@@ -203,66 +204,121 @@ class LxdContainerManagement(object):
         """
         self.module = module
         self.container_name = self.module.params['name']
-        self.config = self.module.params.get('config', None)
+        self.image = self.module.params.get('image', None)
         self.state = self.module.params['state']
+        self.ephemeral = self.module.params['ephemeral']
+        self.profile = self.module.params['profile']
+        self.config = self.module.params.get('config', None)
+        self.force_shutdown = self.module.params['force_shutdown']
+        self.force_local = self.module.params['force_local']
+        self.no_alias = self.module.params['no_alias']
         self.timeout_for_addresses = self.module.params['timeout_for_addresses']
+        self.lxc_path = module.params['executable'] or module.get_bin_path('lxc', True)
         self.addresses = None
-        self.client = Client()
         self.logs = []
 
-    def _create_container(self):
-        config = self.config.copy()
-        config['name'] = self.container_name
-        self.client.containers.create(config, wait=True)
-        # NOTE: get container again for the updated state
-        self.container = self._get_container()
-        self.logs.append('created')
+    def _launch_container(self):
+        cmd = [self.lxc_path, 'launch']
+        if self.force_local:
+            cmd.append('--force-local')
+        if self.no_alias:
+            cmd.append('--no-alias')
+        cmd.append(self.image)
+        cmd.append(self.container_name)
+        if self.ephemeral:
+            cmd.append('-e')
+        if len(self.profile) == 0:
+            cmd.append('-p')
+        else:
+            for p in self.profile:
+                cmd.append('-p')
+                cmd.append(p)
+        if self.config is not None:
+            for key, value in self.config.iteritems:
+                cmd.append('-c')
+                cmd.append([key, value].join('='))
+        (rc, out, err) = self.module.run_command(cmd, check_rc=True)
+        self.logs.append('launched')
 
     def _start_container(self):
-        self.container.start(wait=True)
+        cmd = [self.lxc_path, 'start']
+        if self.force_local:
+            cmd.append('--force-local')
+        if self.no_alias:
+            cmd.append('--no-alias')
+        cmd.append(self.container_name)
+        (rc, out, err) = self.module.run_command(cmd, check_rc=True)
         self.logs.append('started')
 
     def _stop_container(self):
-        self.container.stop(wait=True)
+        cmd = [self.lxc_path, 'stop']
+        if self.force:
+            cmd.append('-f')
+        if self.force_local:
+            cmd.append('--force-local')
+        if self.no_alias:
+            cmd.append('--no-alias')
+        cmd.append(self.container_name)
+        (rc, out, err) = self.module.run_command(cmd, check_rc=True)
         self.logs.append('stopped')
 
     def _restart_container(self):
-        self.container.restart(wait=True)
+        cmd = [self.lxc_path, 'restart']
+        if self.force:
+            cmd.append('-f')
+        if self.force_local:
+            cmd.append('--force-local')
+        if self.no_alias:
+            cmd.append('--no-alias')
+        cmd.append(self.container_name)
+        (rc, out, err) = self.module.run_command(cmd, check_rc=True)
         self.logs.append('restarted')
 
     def _delete_container(self):
-        self.container.delete(wait=True)
+        cmd = [self.lxc_path, 'delete']
+        if self.force:
+            cmd.append('-f')
+        if self.force_local:
+            cmd.append('--force-local')
+        if self.no_alias:
+            cmd.append('--no-alias')
+        cmd.append(self.container_name)
+        (rc, out, err) = self.module.run_command(cmd, check_rc=True)
         self.logs.append('deleted')
 
-    def _freeze_container(self):
-        self.container.freeze(wait=True)
-        self.logs.append('freezed')
+    def _get_container_status(self):
+        cmd = [self.lxc_path, 'info', self.container_name]
+        (rc, out, err) = self.module.run_command(cmd, check_rc=False)
+        if rc == 0:
+            for line in out.split('\n'):
+                if line.startswith("Status: "):
+                    return line[len("Status: "):]
+        return None
 
-    def _unfreeze_container(self):
-        self.container.unfreeze(wait=True)
-        self.logs.append('unfreezed')
-
-    def _get_container(self):
-        try:
-            return self.client.containers.get(self.container_name)
-        except NameError:
-            return None
-        except ConnectionError:
-            self.module.fail_json(msg="Cannot connect to lxd server")
-
-    @staticmethod
-    def _container_to_module_state(container):
-        if container is None:
-            return "absent"
-        else:
-            return ANSIBLE_LXD_STATES[container.status]
-
-    def _container_ipv4_addresses(self, ignore_devices=['lo']):
-        container = self._get_container()
-        network = container is not None and container.state().network or {}
-        network = dict((k, v) for k, v in network.iteritems() if k not in ignore_devices) or {}
-        addresses = dict((k, [a['address'] for a in v['addresses'] if a['family'] == 'inet']) for k, v in network.iteritems()) or {}
-        return addresses
+    def _get_container_addresses(self):
+        cmd = [self.lxc_path, 'info', self.container_name]
+        (rc, out, err) = self.module.run_command(cmd, check_rc=True)
+        in_ips = False
+        addresses_dict = dict()
+        for line in out.split('\n'):
+            if line.startswith("Ips:"):
+                in_ips = True
+            elif in_ips:
+                if line.startswith("Resources:"): 
+                    in_ips = False
+                else:
+                    words = line.strip().split()
+                    interface = words[0].rstrip(':')
+                    family = words[1]
+                    address = words[2]
+                    if interface != 'lo':
+                        addresses = addresses_dict.get(interface, None)
+                        if addresses is None:
+                            addresses = []
+                            addresses_dict[interface] = addresses
+                        if family == 'inet':
+                            addresses.append(address)
+        return addresses_dict
 
     @staticmethod
     def _has_all_ipv4_addresses(addresses):
@@ -274,7 +330,7 @@ class LxdContainerManagement(object):
         due = datetime.datetime.now() + datetime.timedelta(seconds=self.timeout_for_addresses)
         while datetime.datetime.now() < due:
             time.sleep(1)
-            addresses = self._container_ipv4_addresses()
+            addresses = self._get_container_addresses()
             if self._has_all_ipv4_addresses(addresses):
                 self.addresses = addresses
                 return
@@ -285,56 +341,34 @@ class LxdContainerManagement(object):
 
         If the container does not exist the container will be created.
         """
-        if self.container is None:
-            self._create_container()
-            self._start_container()
+        if self.old_state is None:
+            self._launch_container()
         else:
-            if self.container.status == 'Frozen':
-                self._unfreeze_container()
-            if self.container.status != 'Running':
+            if self.old_state != 'started':
                 self._start_container()
         self._get_addresses()
 
     def _stopped(self):
-        if self.container is None:
-            self._create_container()
+        if self.old_state is None:
+            self._launch_container()
+            self._stop_container()
         else:
-            if self.container.status == 'Frozen':
-                self._unfreeze_container()
-            if self.container.status != 'Stopped':
+            if self.old_state != 'stopped':
                 self._stop_container()
 
     def _restarted(self):
-        if self.container is None:
-            self._create_container()
-            self._start_container()
+        if self.old_state is None:
+            self._launch_container()
         else:
-            if self.container.status == 'Frozen':
-                self._unfreeze_container()
-            if self.container.status == 'Running':
+            if self.old_state == 'started':
                 self._restart_container()
             else:
                 self._start_container()
         self._get_addresses()
 
     def _destroyed(self):
-        if self.container is not None:
-            if self.container.status == 'Frozen':
-                self._unfreeze_container()
-            if self.container.status == 'Running':
-                self._stop_container()
+        if self.old_state is not None:
             self._delete_container()
-
-    def _frozen(self):
-        if self.container is None:
-            self._create_container()
-            self._start_container()
-            self._freeze_container()
-        else:
-            if self.container.status != 'Frozen':
-                if self.container.status != 'Running':
-                    self._start_container()
-                self._freeze_container()
 
     def _on_timeout(self):
         state_changed = len(self.logs) > 0
@@ -347,8 +381,14 @@ class LxdContainerManagement(object):
     def run(self):
         """Run the main method."""
 
-        self.container = self._get_container()
-        self.old_state = self._container_to_module_state(self.container)
+        status = self._get_container_status()
+        old_state = ANSIBLE_LXD_STATES.get(status, None)
+        if status is not None and old_state is None:
+            self.module.fail_json(
+                failed=True,
+                msg='unsupported container status',
+                status=status)
+        self.old_state = old_state
 
         action = getattr(self, LXD_ANSIBLE_STATES[self.state])
         action()
@@ -369,29 +409,27 @@ def main():
 
     module = AnsibleModule(
         argument_spec=dict(
-            name=dict(
-                type='str',
-                required=True
-            ),
-            config=dict(
-                type='dict',
-            ),
+            name=dict(type='str', required=True),
+            image=dict(type='str', required=False),
+            ephemeral=dict(type='bool', required=False, default=False),
+            profile=dict(type='list', required=False, default=['default']),
+            config=dict(type='dict', required=False),
+            force=dict(type='bool', required=False, default=False),
+            force_local=dict(type='bool', required=False, default=False),
+            no_alias=dict(type='bool', required=False, default=False),
+            timeout_for_addresses=dict(type='int', default=0),
             state=dict(
                 choices=LXD_ANSIBLE_STATES.keys(),
                 default='started'
             ),
-            timeout_for_addresses=dict(
-                type='int',
-                default=0
-            )
+            executable=dict(required=False, type='path')
         ),
         supports_check_mode=False,
     )
 
-    if not HAS_PYLXD:
-        module.fail_json(
-            msg='The `pylxd` module is not importable. Check the requirements.'
-        )
+    # We screenscrape a huge amount of git commands so use C locale anytime we
+    # call run_command()
+    module.run_command_environ_update = dict(LANG='C', LC_ALL='C', LC_MESSAGES='C', LC_CTYPE='C')
 
     lxd_manage = LxdContainerManagement(module=module)
     lxd_manage.run()
