@@ -130,6 +130,32 @@ EXAMPLES = """
 - hosts: localhost
   connection: local
   tasks:
+    - name: Start the container with specified profiles.
+      lxd_container:
+        name: myubuntu2
+        image: images:ubuntu/xenial/amd64
+        state: started
+        timeout_for_addresses: 5
+        profile:
+          - default
+          - docker
+
+- hosts: localhost
+  connection: local
+  tasks:
+    - name: Start the container with specified configs.
+      lxd_container:
+        name: myubuntu3
+        image: images:ubuntu/xenial/amd64
+        state: started
+        timeout_for_addresses: 5
+        config:
+          security.privileged: true
+          security.nesting: true
+
+- hosts: localhost
+  connection: local
+  tasks:
     - name: Stop the container if it exists. Create, launch and stop the container if not.
       lxd_container:
         name: myubuntu
