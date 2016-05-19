@@ -43,6 +43,7 @@ options:
           - started
           - stopped
           - restarted
+          - frozen
           - absent
         description:
           - Define the state of a container.
@@ -174,6 +175,7 @@ LXD_ANSIBLE_STATES = {
     'started': '_started',
     'stopped': '_stopped',
     'restarted': '_restarted',
+    'frozen': '_frozen',
     'absent': '_destroyed',
 }
 
@@ -182,6 +184,7 @@ LXD_ANSIBLE_STATES = {
 ANSIBLE_LXD_STATES = {
     'Running': 'started',
     'Stopped': 'stopped',
+    'Frozen': 'frozen',
 }
 
 try:
@@ -209,7 +212,7 @@ class LxdContainerManagement(object):
         self.ephemeral = self.module.params['ephemeral']
         self.profile = self.module.params['profile']
         self.config = self.module.params.get('config', None)
-        self.force_shutdown = self.module.params['force_shutdown']
+        self.force = self.module.params['force']
         self.force_local = self.module.params['force_local']
         self.no_alias = self.module.params['no_alias']
         self.timeout_for_addresses = self.module.params['timeout_for_addresses']
@@ -273,6 +276,16 @@ class LxdContainerManagement(object):
         cmd.append(self.container_name)
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
         self.logs.append('restarted')
+
+    def _pause_container(self):
+        cmd = [self.lxc_path, 'pause']
+        if self.force_local:
+            cmd.append('--force-local')
+        if self.no_alias:
+            cmd.append('--no-alias')
+        cmd.append(self.container_name)
+        (rc, out, err) = self.module.run_command(cmd, check_rc=True)
+        self.logs.append('deleted')
 
     def _delete_container(self):
         cmd = [self.lxc_path, 'delete']
@@ -353,18 +366,35 @@ class LxdContainerManagement(object):
             self._launch_container()
             self._stop_container()
         else:
-            if self.old_state != 'stopped':
+            if self.old_state == 'frozen':
+                self._start_container()
+                self._pause_container()
+            elif self.old_state != 'stopped':
                 self._stop_container()
 
     def _restarted(self):
         if self.old_state is None:
             self._launch_container()
         else:
-            if self.old_state == 'started':
+            if self.old_state == 'frozen':
+                self._start_container()
+                self._restart_container()
+            elif self.old_state == 'started':
                 self._restart_container()
             else:
                 self._start_container()
         self._get_addresses()
+
+    def _frozen(self):
+        if self.old_state is None:
+            self._launch_container()
+            self._pause_container()
+        else:
+            if self.old_state == 'started':
+                self._pause_container()
+            elif self.old_state == 'stopped':
+                self._start_container()
+                self._pause_container()
 
     def _destroyed(self):
         if self.old_state is not None:
