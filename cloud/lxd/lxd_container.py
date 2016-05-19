@@ -115,7 +115,6 @@ EXAMPLES = """
   connection: local
   tasks:
     - name: Start the container if it exists. Create and launch the container if not.
-    - name: Create a started container
       lxd_container:
         name: myubuntu
         image: images:ubuntu/xenial/amd64
