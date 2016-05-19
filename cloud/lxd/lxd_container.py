@@ -114,32 +114,36 @@ EXAMPLES = """
 - hosts: localhost
   connection: local
   tasks:
+    - name: Start the container if it exists. Create and launch the container if not.
     - name: Create a started container
       lxd_container:
-        name: my-ubuntu
-        state: started
+        name: myubuntu
         image: images:ubuntu/xenial/amd64
+        state: started
+        timeout_for_addresses: 5
     - name: Install python in the created container "nettest"
-      command: lxc exec my-ubuntu -- apt install -y python
-    - name: Copy somefile.txt to /tmp/renamed.txt in the created container "nettest"
-      command: lxc file push somefile.txt nettest/tmp/renamed.txt
-    - name: Copy /etc/hosts in the created container "nettest" to localhost with name "nettest-hosts"
-      command: lxc file pull nettest/etc/hosts nettest-hosts
+      command: lxc exec myubuntu -- apt install -y python
+    - name: Copy somefile.txt to /tmp/renamed.txt in the created container "myubuntu"
+      command: lxc file push somefile.txt myubuntu/tmp/renamed.txt
+    - name: Copy /etc/hosts in the created container "myubuntu" to localhost with name "myubuntu-hosts"
+      command: lxc file pull myubuntu/etc/hosts myubuntu-hosts
 
 - hosts: localhost
   connection: local
   tasks:
-    - name: Create a stopped container
+    - name: Stop the container if it exists. Create, launch and stop the container if not.
       lxd_container:
-        name: my-ubuntu
+        name: myubuntu
+        image: images:ubuntu/xenial/amd64
         state: stopped
 
 - hosts: localhost
   connection: local
   tasks:
-    - name: Restart a container
+    - name: Restart the container if exists. Create and start the container if not.
       lxd_container:
-        name: my-ubuntu
+        name: myubuntu
+        image: images:ubuntu/xenial/amd64
         state: restarted
 """
 
@@ -151,7 +155,7 @@ lxd_container:
   contains:
     addresses:
       description: mapping from the network device name to a list of IPv4 addresses in the container
-      returned: when state is started or restarted
+      returned: when state is started or restarted and timeout_for_addresses is long enough for addresses to be set.
       type: object
       sample: {"eth0": ["10.155.92.191"]}
     old_state:
@@ -162,7 +166,7 @@ lxd_container:
       description: list of actions performed for the container
       returned: success
       type: list
-      sample: ["created", "started"]
+      sample: ["launch", "stop"]
 """
 
 from distutils.spawn import find_executable
@@ -241,7 +245,7 @@ class LxdContainerManagement(object):
                 cmd.append('-c')
                 cmd.append([key, value].join('='))
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
-        self.logs.append('launched')
+        self.logs.append('launch')
 
     def _start_container(self):
         cmd = [self.lxc_path, 'start']
@@ -251,31 +255,31 @@ class LxdContainerManagement(object):
             cmd.append('--no-alias')
         cmd.append(self.container_name)
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
-        self.logs.append('started')
+        self.logs.append('start')
 
     def _stop_container(self):
         cmd = [self.lxc_path, 'stop']
         if self.force:
-            cmd.append('-f')
+            cmd.append('--force')
         if self.force_local:
             cmd.append('--force-local')
         if self.no_alias:
             cmd.append('--no-alias')
         cmd.append(self.container_name)
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
-        self.logs.append('stopped')
+        self.logs.append('stop')
 
     def _restart_container(self):
         cmd = [self.lxc_path, 'restart']
         if self.force:
-            cmd.append('-f')
+            cmd.append('--force')
         if self.force_local:
             cmd.append('--force-local')
         if self.no_alias:
             cmd.append('--no-alias')
         cmd.append(self.container_name)
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
-        self.logs.append('restarted')
+        self.logs.append('restart')
 
     def _pause_container(self):
         cmd = [self.lxc_path, 'pause']
@@ -285,19 +289,19 @@ class LxdContainerManagement(object):
             cmd.append('--no-alias')
         cmd.append(self.container_name)
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
-        self.logs.append('deleted')
+        self.logs.append('pause')
 
     def _delete_container(self):
         cmd = [self.lxc_path, 'delete']
         if self.force:
-            cmd.append('-f')
+            cmd.append('--force')
         if self.force_local:
             cmd.append('--force-local')
         if self.no_alias:
             cmd.append('--no-alias')
         cmd.append(self.container_name)
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
-        self.logs.append('deleted')
+        self.logs.append('delete')
 
     def _get_container_status(self):
         cmd = [self.lxc_path, 'info', self.container_name]
