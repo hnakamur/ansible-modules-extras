@@ -240,9 +240,9 @@ class LxdContainerManagement(object):
                 cmd.append('-p')
                 cmd.append(p)
         if self.config is not None:
-            for key, value in self.config.iteritems:
+            for key, value in self.config.iteritems():
                 cmd.append('-c')
-                cmd.append([key, value].join('='))
+                cmd.append('{0}={1}'.format(key, value))
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
         self.logs.append('launch')
 
