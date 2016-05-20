@@ -55,7 +55,7 @@ options:
           - Used only when the container is not created yet.
         required: false
         default: false
-    profile:
+    profiles:
         description:
           - Profile list to apply to the container.
           - Used only when the container is not created yet.
@@ -136,7 +136,7 @@ EXAMPLES = """
         image: images:ubuntu/xenial/amd64
         state: started
         timeout_for_addresses: 5
-        profile:
+        profiles:
           - default
           - docker
 
@@ -239,7 +239,7 @@ class LxdContainerManagement(object):
         self.image = self.module.params.get('image', None)
         self.state = self.module.params['state']
         self.ephemeral = self.module.params['ephemeral']
-        self.profile = self.module.params['profile']
+        self.profiles = self.module.params['profiles']
         self.config = self.module.params.get('config', None)
         self.force = self.module.params['force']
         self.force_local = self.module.params['force_local']
@@ -259,10 +259,10 @@ class LxdContainerManagement(object):
         cmd.append(self.container_name)
         if self.ephemeral:
             cmd.append('-e')
-        if len(self.profile) == 0:
+        if len(self.profiles) == 0:
             cmd.append('-p')
         else:
-            for p in self.profile:
+            for p in self.profiles:
                 cmd.append('-p')
                 cmd.append(p)
         if self.config is not None:
@@ -471,7 +471,7 @@ def main():
             name=dict(type='str', required=True),
             image=dict(type='str', required=False),
             ephemeral=dict(type='bool', required=False, default=False),
-            profile=dict(type='list', required=False, default=['default']),
+            profiles=dict(type='list', required=False, default=['default']),
             config=dict(type='dict', required=False),
             force=dict(type='bool', required=False, default=False),
             force_local=dict(type='bool', required=False, default=False),
