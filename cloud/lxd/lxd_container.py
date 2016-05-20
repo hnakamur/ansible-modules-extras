@@ -103,8 +103,8 @@ notes:
     2.1, the later requires python to be installed in the container which can
     be done with the command module.
   - You can copy a file from the host to the container
-    with `command=lxc file push filename container_name/dir/filename`
-    on localhost. See the first example below.
+    with the Ansible `copy` and `template` module and the `lxd` connection plugin.
+    See the example below.
   - You can copy a file in the creatd container to the localhost
     with `command=lxc file pull container_name/dir/filename filename`.
     See the first example below.
@@ -116,23 +116,31 @@ EXAMPLES = """
   tasks:
     - name: Start the container if it exists. Create and launch the container if not.
       lxd_container:
-        name: myubuntu
+        name: mycontainer
         image: images:ubuntu/xenial/amd64
         state: started
         timeout_for_addresses: 5
-    - name: Install python in the created container "nettest"
-      command: lxc exec myubuntu -- apt install -y python
-    - name: Copy somefile.txt to /tmp/renamed.txt in the created container "myubuntu"
-      command: lxc file push somefile.txt myubuntu/tmp/renamed.txt
-    - name: Copy /etc/hosts in the created container "myubuntu" to localhost with name "myubuntu-hosts"
-      command: lxc file pull myubuntu/etc/hosts myubuntu-hosts
+    - name: Install python in the created container "mycontainer"
+      command: lxc exec mycontainer -- apt install -y python
+    - name: Copy /etc/hosts in the created container "mycontainer" to localhost with name "mycontainer-hosts"
+      command: lxc file pull mycontainer/etc/hosts mycontainer-hosts
+
+# Note your container must be in the inventory for the below example.
+#
+# [containers]
+# mycontainer ansible_connection=lxd
+#
+- hosts:
+    - mycontainer
+  tasks:
+    - template: src=foo.j2 dest=/etc/bar
 
 - hosts: localhost
   connection: local
   tasks:
     - name: Start the container with specified profiles.
       lxd_container:
-        name: myubuntu2
+        name: mycontainer2
         image: images:ubuntu/xenial/amd64
         state: started
         timeout_for_addresses: 5
@@ -145,7 +153,7 @@ EXAMPLES = """
   tasks:
     - name: Start the container with specified configs.
       lxd_container:
-        name: myubuntu3
+        name: mycontainer3
         image: images:ubuntu/xenial/amd64
         state: started
         timeout_for_addresses: 5
@@ -158,7 +166,7 @@ EXAMPLES = """
   tasks:
     - name: Stop the container if it exists. Create, launch and stop the container if not.
       lxd_container:
-        name: myubuntu
+        name: mycontainer
         image: images:ubuntu/xenial/amd64
         state: stopped
 
@@ -167,7 +175,7 @@ EXAMPLES = """
   tasks:
     - name: Restart the container if exists. Create and start the container if not.
       lxd_container:
-        name: myubuntu
+        name: mycontainer
         image: images:ubuntu/xenial/amd64
         state: restarted
 """
