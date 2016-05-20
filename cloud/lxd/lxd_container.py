@@ -324,9 +324,9 @@ class LxdContainerManagement(object):
         (rc, out, err) = self.module.run_command(cmd, check_rc=True)
         self.logs.append('pause')
 
-    def _delete_container(self):
+    def _delete_container(self, force=False):
         cmd = [self.lxc_path, 'delete']
-        if self.force:
+        if force or self.force:
             cmd.append('--force')
         if self.force_local:
             cmd.append('--force-local')
@@ -435,7 +435,7 @@ class LxdContainerManagement(object):
 
     def _destroyed(self):
         if self.old_state is not None:
-            self._delete_container()
+            self._delete_container(force=True)
 
     def _on_timeout(self):
         state_changed = len(self.logs) > 0
