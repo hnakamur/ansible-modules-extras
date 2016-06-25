@@ -180,13 +180,11 @@ from distutils.spawn import find_executable
 
 try:
     from pylxd.client import Client
-    from pylxd.exceptions import NotFound
+    from pylxd.exceptions import ClientConnectionFailed, NotFound
 except ImportError:
     HAS_PYLXD = False
 else:
     HAS_PYLXD = True
-
-from requests.exceptions import ConnectionError
 
 # LXD_ANSIBLE_STATES is a map of states that contain values of methods used
 # when a particular state is evoked.
@@ -232,7 +230,10 @@ class LxdContainerManagement(object):
         self.wait_for_ipv4_addresses = self.module.params['wait_for_ipv4_addresses']
         self.force_stop = self.module.params['force_stop']
         self.addresses = None
-        self.client = Client()
+	try:
+	    self.client = Client()
+        except ClientConnectionFailed:
+            self.module.fail_json(msg="Cannot connect to lxd server")
         self.actions = []
 
     def _create_container(self):
@@ -272,7 +273,7 @@ class LxdContainerManagement(object):
             return self.client.containers.get(self.container_name)
         except NotFound:
             return None
-        except ConnectionError:
+        except ClientConnectionFailed:
             self.module.fail_json(msg="Cannot connect to lxd server")
 
     @staticmethod
