@@ -90,7 +90,7 @@ options:
         required: false
         default: /var/lib/lxd/unix.socket
 requirements:
-  - 'requests_unixsocket'
+  - 'lxdapi'
 notes:
   - Containers must have a unique name. If you attempt to create a container
     with a name that already existed in the users namespace the module will
@@ -198,15 +198,16 @@ lxd_container:
       sample: ["create", "start"]
 """
 
-from ansible.compat.six.moves.urllib.parse import quote
+import json
 
 try:
-    import requests_unixsocket
+    from lxdapi import lxd
+    from lxdapi.api import APIException
     from requests.exceptions import ConnectionError
 except ImportError:
-    HAS_REQUETS_UNIXSOCKET = False
+    HAS_LXDAPI = False
 else:
-    HAS_REQUETS_UNIXSOCKET = True
+    HAS_LXDAPI = True
 
 # LXD_ANSIBLE_STATES is a map of states that contain values of methods used
 # when a particular state is evoked.
@@ -253,64 +254,81 @@ class LxdContainerManagement(object):
         self.force_stop = self.module.params['force_stop']
         self.addresses = None
         self.unix_socket_path = self.module.params['unix_socket_path']
-        self.base_url = 'http+unix://{0}'.format(quote(self.unix_socket_path, safe=''))
-        self.session = requests_unixsocket.Session()
+        self.api = lxd.API.factory(endpoint=self.unix_socket_path)
         self.logs = []
         self.actions = []
 
-    def _path_to_url(self, path):
-        return self.base_url + path
-
-    def _send_request(self, method, path, json=None, ok_error_codes=None):
+    def _send_request(self, method, url, json=None, ok_error_codes=None):
         try:
-            url = self._path_to_url(path)
-            resp = self.session.request(method, url, json=json, timeout=self.timeout)
-            resp_json = resp.json()
-            self.logs.append({
-                'type': 'sent request',
-                'request': {'method': method, 'url': url, 'json': json, 'timeout': self.timeout},
-                'response': {'json': resp_json}
-            })
-            resp_type = resp_json.get('type', None)
-            if resp_type == 'error':
-                if ok_error_codes is not None and resp_json['error_code'] in ok_error_codes:
-                    return resp_json
-                self.module.fail_json(
-                    msg='error response',
-                    request={'method': method, 'url': url, 'json': json, 'timeout': self.timeout},
-                    response={'json': resp_json},
-                    logs=self.logs
-                )
-            return resp_json
+            result = self.api.request(method, url, json=json, timeout=self.timeout)
+            resp_json = result.response.json()
+            self._append_log('sent request', result, self.timeout)
+            return result
         except ConnectionError:
             self.module.fail_json(msg='cannot connect to the LXD server', unix_socket_path=self.unix_socket_path)
+        except APIException as e:
+            self._append_log('sent request', e.result, self.timeout)
+            resp_json = e.result.response.json()
+            error_code = resp_json['error_code']
+            if ok_error_codes is not None and error_code in ok_error_codes:
+                return e.result
+            self._fail_response(msg, 'error response', e.result, self.timeout)
 
-    def _operate_and_wait(self, method, path, json=None):
-        resp_json = self._send_request(method, path, json=json)
+    def _append_log(self, log_type, result, timeout):
+        if result.request.body is None:
+            req_json = None
+        else:
+            req_json = json.loads(result.request.body)
+        self.logs.append({
+            'type': log_type,
+            'request': {
+                'method': result.request.method,
+                'url': result.request.url,
+                'json': req_json,
+                'timeout': timeout
+            },
+            'response': {
+                'status': result.response.status_code,
+                'json': result.response.json()
+            }
+        })
+
+    def _fail_response(self, msg, result, timeout):
+        self.module.fail_json(
+            msg=msg,
+            request={
+                'method': result.request.method,
+                'url': result.request.url,
+                'body': result.request.body,
+                'timeout': self.timeout
+            },
+            response={'body': result.resposen.json()},
+            logs=self.logs
+        )
+
+    def _operate_and_wait(self, method, url, json=None):
+        result = self._send_request(method, url, json=json)
+        resp_json = result.response.json()
         if resp_json['type'] == 'async':
-            path = '{0}/wait?timeout={1}'.format(resp_json['operation'], self.timeout)
-            resp_json = self._send_request('GET', path)
-            if resp_json['metadata']['status'] != 'Success':
-                url = self._path_to_url(path)
-                self.module.fail_json(
-                    msg='error response for waiting opearation',
-                    request={'method': method, 'url': url, 'json': json, 'timeout': self.timeout},
-                    response={'json': resp_json},
-                    logs=self.logs
-                )
-        return resp_json
+            wait_result = result.wait(self.timeout)
+            wait_resp_json = wait_result.response.json()
+            if wait_resp_json['metadata']['status'] != 'Success':
+                self._fail_response(msg, 'error response for waiting operation', wait_result, self.timeout)
+        return result
 
     def _get_container_json(self):
-        return self._send_request(
-            'GET', '/1.0/containers/{0}'.format(self.container_name),
+        result = self._send_request(
+            'GET', 'containers/{0}'.format(self.container_name),
             ok_error_codes=[404]
         )
+        return result.response.json()
 
     def _get_container_state_json(self):
-        return self._send_request(
-            'GET', '/1.0/containers/{0}/state'.format(self.container_name),
+        result = self._send_request(
+            'GET', 'containers/{0}/state'.format(self.container_name),
             ok_error_codes=[404]
         )
+        return result.response.json()
 
     @staticmethod
     def _container_json_to_module_state(resp_json):
@@ -322,12 +340,12 @@ class LxdContainerManagement(object):
         json={'action': action, 'timeout': self.timeout}
         if force_stop:
             json['force'] = True
-        return self._operate_and_wait('PUT', '/1.0/containers/{0}/state'.format(self.container_name), json)
+        return self._operate_and_wait('PUT', 'containers/{0}/state'.format(self.container_name), json)
 
     def _create_container(self):
         config = self.config.copy()
         config['name'] = self.container_name
-        self._operate_and_wait('POST', '/1.0/containers', config)
+        self._operate_and_wait('POST', 'containers', config)
         self.actions.append('creat')
 
     def _start_container(self):
@@ -343,7 +361,7 @@ class LxdContainerManagement(object):
         self.actions.append('restart')
 
     def _delete_container(self):
-        return self._operate_and_wait('DELETE', '/1.0/containers/{0}'.format(self.container_name))
+        return self._operate_and_wait('DELETE', 'containers/{0}'.format(self.container_name))
         self.actions.append('delete')
 
     def _freeze_container(self):
@@ -481,7 +499,7 @@ class LxdContainerManagement(object):
             json['devices'] = self.config['devices']
         if self._needs_to_change_config('profiles'):
             json['profiles'] = self.config['profiles']
-        self._operate_and_wait('PUT', '/1.0/containers/{0}'.format(self.container_name), json)
+        self._operate_and_wait('PUT', 'containers/{0}'.format(self.container_name), json)
         self.actions.append('apply_configs')
 
     def run(self):
@@ -541,9 +559,9 @@ def main():
         supports_check_mode=False,
     )
 
-    if not HAS_REQUETS_UNIXSOCKET:
+    if not HAS_LXDAPI:
         module.fail_json(
-            msg='The `requests_unixsocket` module is not importable. Check the requirements.'
+            msg='The `lxdapi` module is not importable. Check the requirements.'
         )
 
     lxd_manage = LxdContainerManagement(module=module)
