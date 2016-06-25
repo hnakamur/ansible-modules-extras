@@ -230,8 +230,8 @@ class LxdContainerManagement(object):
         self.wait_for_ipv4_addresses = self.module.params['wait_for_ipv4_addresses']
         self.force_stop = self.module.params['force_stop']
         self.addresses = None
-	try:
-	    self.client = Client()
+        try:
+            self.client = Client()
         except ClientConnectionFailed:
             self.module.fail_json(msg="Cannot connect to lxd server")
         self.actions = []
@@ -317,17 +317,26 @@ class LxdContainerManagement(object):
         else:
             if self.container.status == 'Frozen':
                 self._unfreeze_container()
-            if self.container.status != 'Running':
+            elif self.container.status == 'Stopped':
                 self._start_container()
+            if self._needs_to_apply_configs():
+                self._apply_configs()
         self._get_addresses()
 
     def _stopped(self):
         if self.container is None:
             self._create_container()
         else:
-            if self.container.status == 'Frozen':
-                self._unfreeze_container()
-            if self.container.status != 'Stopped':
+            if self.container.status == 'Stopped':
+                if self._needs_to_apply_configs():
+                    self._start_container()
+                    self._apply_configs()
+                    self._stop_container()
+            else:
+                if self.container.status == 'Frozen':
+                    self._unfreeze_container()
+                if self._needs_to_apply_configs():
+                    self._apply_configs()
                 self._stop_container()
 
     def _restarted(self):
@@ -337,10 +346,9 @@ class LxdContainerManagement(object):
         else:
             if self.container.status == 'Frozen':
                 self._unfreeze_container()
-            if self.container.status == 'Running':
-                self._restart_container()
-            else:
-                self._start_container()
+            if self._needs_to_apply_configs():
+                self._apply_configs()
+            self._restart_container()
         self._get_addresses()
 
     def _destroyed(self):
@@ -357,10 +365,16 @@ class LxdContainerManagement(object):
             self._start_container()
             self._freeze_container()
         else:
-            if self.container.status != 'Frozen':
-                if self.container.status != 'Running':
-                    self._start_container()
+            if self._needs_to_apply_configs():
+                if self.container.status == 'Frozen':
+                    self._unfreeze_container()
+                self._apply_configs()
                 self._freeze_container()
+            else:
+                if self.container.status != 'Frozen':
+                    if self.container.status == 'Stopped':
+                        self._start_container()
+                    self._freeze_container()
 
     def _on_timeout(self):
         state_changed = len(self.actions) > 0
@@ -369,6 +383,16 @@ class LxdContainerManagement(object):
             msg='timeout for getting addresses',
             changed=state_changed,
             logs=self.actions)
+
+    def _needs_to_apply_configs(self):
+        old_config = dict((k, v) for k, v in self.container.config.items() if not k.startswith('volatile.'))
+        return self.config['config'] != old_config
+
+    def _apply_configs(self):
+        for k, v in self.config['config'].items():
+            self.container.config[k] = v
+        self.container.update()
+        self.actions.append('apply_configs')
 
     def run(self):
         """Run the main method."""
