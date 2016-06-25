@@ -414,7 +414,7 @@ class LxdContainerManagement(object):
             self.container.devices = self.config['devices']
         if 'profiles' in self.config:
             self.container.profiles = self.config['profiles']
-        self.container.update()
+        self.container.update(wait=True)
         self.actions.append('apply_configs')
 
     def run(self):
