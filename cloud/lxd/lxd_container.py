@@ -50,16 +50,29 @@ options:
           - Define the state of a container.
         required: false
         default: started
-    timeout_for_addresses:
+    timeout:
         description:
-          - A timeout of waiting for IPv4 addresses are set to the all network
-            interfaces in the container after starting or restarting.
-          - If this value is equal to or less than 0, Ansible does not
-            wait for IPv4 addresses.
+          - A timeout of one LXC REST API call.
+          - This is also used as a timeout for waiting until IPv4 addresses
+            are set to the all network interfaces in the container after
+            starting or restarting.
         required: false
-        default: 0
+        default: 30
+    wait_for_ipv4_addresses:
+        description:
+          - If this is true, the lxd_module waits until IPv4 addresses
+            are set to the all network interfaces in the container after
+            starting or restarting.
+        required: false
+        default: false
+    force_stop:
+        description:
+          - If this is true, the lxd_module forces to stop the container
+            when it stops or restarts the container.
+        required: false
+        default: false
 requirements:
-  - 'pylxd >= 2.0'
+  - 'pylxd >= 2.0.2'
 notes:
   - Containers must have a unique name. If you attempt to create a container
     with a name that already existed in the users namespace the module will
@@ -156,17 +169,18 @@ lxd_container:
       description: the old state of the container
       returned: when state is started or restarted
       sample: "stopped"
-    logs:
+    actions:
       description: list of actions performed for the container
       returned: success
       type: list
-      sample: ["created", "started"]
+      sample: ["create", "start"]
 """
 
 from distutils.spawn import find_executable
 
 try:
     from pylxd.client import Client
+    from pylxd.exceptions import NotFound
 except ImportError:
     HAS_PYLXD = False
 else:
@@ -214,10 +228,12 @@ class LxdContainerManagement(object):
         self.container_name = self.module.params['name']
         self.config = self.module.params.get('config', None)
         self.state = self.module.params['state']
-        self.timeout_for_addresses = self.module.params['timeout_for_addresses']
+        self.timeout = self.module.params['timeout']
+        self.wait_for_ipv4_addresses = self.module.params['wait_for_ipv4_addresses']
+        self.force_stop = self.module.params['force_stop']
         self.addresses = None
         self.client = Client()
-        self.logs = []
+        self.actions = []
 
     def _create_container(self):
         config = self.config.copy()
@@ -225,36 +241,36 @@ class LxdContainerManagement(object):
         self.client.containers.create(config, wait=True)
         # NOTE: get container again for the updated state
         self.container = self._get_container()
-        self.logs.append('created')
+        self.actions.append('create')
 
     def _start_container(self):
         self.container.start(wait=True)
-        self.logs.append('started')
+        self.actions.append('starte')
 
     def _stop_container(self):
-        self.container.stop(wait=True)
-        self.logs.append('stopped')
+        self.container.stop(force=self.force_stop, wait=True)
+        self.actions.append('stop')
 
     def _restart_container(self):
-        self.container.restart(wait=True)
-        self.logs.append('restarted')
+        self.container.restart(force=self.force_stop, wait=True)
+        self.actions.append('restart')
 
     def _delete_container(self):
         self.container.delete(wait=True)
-        self.logs.append('deleted')
+        self.actions.append('delete')
 
     def _freeze_container(self):
         self.container.freeze(wait=True)
-        self.logs.append('freezed')
+        self.actions.append('freeze')
 
     def _unfreeze_container(self):
         self.container.unfreeze(wait=True)
-        self.logs.append('unfreezed')
+        self.actions.append('unfreeze')
 
     def _get_container(self):
         try:
             return self.client.containers.get(self.container_name)
-        except NameError:
+        except NotFound:
             return None
         except ConnectionError:
             self.module.fail_json(msg="Cannot connect to lxd server")
@@ -278,9 +294,9 @@ class LxdContainerManagement(object):
         return len(addresses) > 0 and all([len(v) > 0 for v in addresses.itervalues()])
 
     def _get_addresses(self):
-        if self.timeout_for_addresses <= 0:
+        if not self.wait_for_ipv4_addresses:
             return
-        due = datetime.datetime.now() + datetime.timedelta(seconds=self.timeout_for_addresses)
+        due = datetime.datetime.now() + datetime.timedelta(seconds=self.timeout)
         while datetime.datetime.now() < due:
             time.sleep(1)
             addresses = self._container_ipv4_addresses()
@@ -346,12 +362,12 @@ class LxdContainerManagement(object):
                 self._freeze_container()
 
     def _on_timeout(self):
-        state_changed = len(self.logs) > 0
+        state_changed = len(self.actions) > 0
         self.module.fail_json(
             failed=True,
             msg='timeout for getting addresses',
             changed=state_changed,
-            logs=self.logs)
+            logs=self.actions)
 
     def run(self):
         """Run the main method."""
@@ -362,11 +378,11 @@ class LxdContainerManagement(object):
         action = getattr(self, LXD_ANSIBLE_STATES[self.state])
         action()
 
-        state_changed = len(self.logs) > 0
+        state_changed = len(self.actions) > 0
         result_json = {
             "changed" : state_changed,
             "old_state" : self.old_state,
-            "logs" : self.logs
+            "actions" : self.actions
         }
         if self.addresses is not None:
             result_json['addresses'] = self.addresses
@@ -389,9 +405,17 @@ def main():
                 choices=LXD_ANSIBLE_STATES.keys(),
                 default='started'
             ),
-            timeout_for_addresses=dict(
+            timeout=dict(
                 type='int',
-                default=0
+                default=30
+            ),
+            wait_for_ipv4_addresses=dict(
+                type='bool',
+                default=False
+            ),
+            force_stop=dict(
+                type='bool',
+                default=False
             )
         ),
         supports_check_mode=False,
