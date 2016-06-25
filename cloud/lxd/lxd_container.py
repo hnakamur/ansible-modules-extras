@@ -385,12 +385,35 @@ class LxdContainerManagement(object):
             logs=self.actions)
 
     def _needs_to_apply_configs(self):
-        old_config = dict((k, v) for k, v in self.container.config.items() if not k.startswith('volatile.'))
-        return self.config['config'] != old_config
+        return (
+            self._needs_to_apply_config() or
+            self._needs_to_apply_devices() or
+            self._needs_to_apply_profiles()
+        )
+
+    def _needs_to_apply_config(self):
+        if 'config' not in self.config:
+            return False
+        old_configs = dict((k, v) for k, v in self.container.config.items() if not k.startswith('volatile.'))
+        return self.config['config'] != old_configs
+
+    def _needs_to_apply_devices(self):
+        if 'devices' not in self.config:
+            return False
+        return self.config['devices'] != self.container.devices
+
+    def _needs_to_apply_profiles(self):
+        if 'profiles' not in self.config:
+            return False
+        return self.config['profiles'] != self.container.profiles
 
     def _apply_configs(self):
         for k, v in self.config['config'].items():
             self.container.config[k] = v
+        if 'devices' in self.config:
+            self.container.devices = self.config['devices']
+        if 'profiles' in self.config:
+            self.container.profiles = self.config['profiles']
         self.container.update()
         self.actions.append('apply_configs')
 
